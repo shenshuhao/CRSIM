@@ -1,45 +1,45 @@
-% prototype program for CR-SIM reconstruction using inverse matrix based phase estimaton algorithm
-% Author:Shen Shuhao
-% Copyright@National University of Singapore
+% Prototype program for CR-SIM reconstruction 
+% Author:Chen Nanguang, Shen Shuhao
+% Copyright@Optical Bioimaging Lab, National University of Singapore
 
 clear all;
 close all;
 %% read image file
 p_num=3;% phase shift times for each pattern orientation
-N=1; % Number of z slices
+N=178; % Number of z slices
 
-filepath='D:\Manuscript\Line-scan SIM\Image data\\Mouse_brain_SRSIM\';%replace with your file's path
-filename='Hela';% the name format should be filename+'_0/120/240d'+'_zslice number'
+filepath='D:\Manuscript\Line-scan SIM\Image data\mouse_brain_slit_60x\';%replace with your file's path
+filename='Mouse_60xdentrite_stack';% the name format should be filename+'_0/120/240d'+'_zslice number'
 fileformat='tif';
+
+%% saving file
+save_flag=1; % save the image results if save_flag equals 1;
 
 %% parameter of the detection system
 lambda=520;% fluorescence emission wavelength (emission maximum). unit: nm
 psize=39; % psize=pixel size/magnification power. unit: nm
-NA=0.8; %numerical aperture
+NA=0.8; %effective numerical aperture
 
 %% parameter for reconstruction
-alpha=0.4;
-wiener_factor=0.05;
-mask_factor=0.2;%a high-pass mask (fmask) is utilized to estimate the modulation vector;
+alpha=0.4; % Merged baseband coefficient
+wiener_factor=0.05; % Wiener filter factor
+mask_factor=0.3;%a high-pass mask (fmask) is utilized to estimate the modulation vector;
 
-show_initial_result_flag=1;
+show_initial_result_flag=1; % Show initial result if show_initial_result_flag equals 1;
 
-show_corrected_result_flag=1;
-% the cutoff frequency of fmask is mask_factor*(cutoff frequency of the detection OTF)
-% recommended value: 0.6 for conventional SIM, 0.8 for TIRF-SIM
-
-%% saving file
-save_flag=0; % save the results if save_flag equals 1;
+show_corrected_result_flag=1; % Show corrected result if show_corrected_result_flag equals 1;
 
 for z=1:N
-    disp(z);
-
-    noiseimage(:,:,1)=imresize(double(imread([filepath,filename,'_0d_',num2str(z),'.',fileformat])),[1080 1080]);
-    noiseimage(:,:,1)=noiseimage(:,:,1)';
-    noiseimage(:,:,2)=imresize(double(imread([filepath,filename,'_120d_',num2str(z),'.',fileformat])),[1080 1080]);
-    noiseimage(:,:,2)=noiseimage(:,:,2)';
-    noiseimage(:,:,3)=imresize(double(imread([filepath,filename,'_240d_',num2str(z),'.',fileformat])),[1080 1080]);
-    noiseimage(:,:,3)=noiseimage(:,:,3)';
+    fprintf('Current z slice: No.%d\n',z);
+ %% Read raw images from files    
+    for jj=1:p_num
+        noiseimage_raw(:,:,jj)=...
+            double(imread([filepath,filename,'_',num2str((jj-1)*120),'d_', num2str(z), '.',fileformat]));
+    end
+    [imv,imh] = size(noiseimage_raw(:,:,1));
+    noiseimage_raw = noiseimage_raw - min(noiseimage_raw(:));
+    noiseimage = [noiseimage_raw zeros(imv,imv-imh,size(noiseimage_raw,3))];
+   
 
     [xsize,ysize]=size(noiseimage(:,:,1));
     [Y,X]=meshgrid(1:ysize,1:xsize);
@@ -55,6 +55,7 @@ for z=1:N
     yr=Y-yc;
     xr=X-xc;
     R=sqrt((xr).^2+(yr).^2);% distance between the point (x,y) and center (xc,yc)
+
     %% Generate the PSF
     pixelnum=xsize;
     rpixel=NA*pixelnum*psize/lambda;
@@ -64,13 +65,14 @@ for z=1:N
     ifftscalede=numel(ctfde)/ctfdeSignificantPix;
     apsfde=fftshift(ifft2(ifftshift(ctfde)));
     ipsfde=ifftscalede*abs(apsfde).^2;
-    OTFde=real(fftshift(fft2(ifftshift(ipsfde))));
+    OTFde=abs(fftshift(fft2(ifftshift(ipsfde))));
     clear apsfde ctfde temp X Y
+
     %% filter/deconvolution before using noiseimage
-    widefield=sum(noiseimage,3);
+    widefield=sum(noiseimage,3); % Obtain widefield image
 
     separated_FT=zeros(xsize,ysize,3);
-    noiseimagef=zeros(size(noiseimage));
+    noiseimagef=zeros(size(noiseimage));% Obtain the frequency domain of the raw images
     noiseimagef(:,:,1)=fftshift(fft2(noiseimage(:,:,1)));
     noiseimagef(:,:,2)=fftshift(fft2(noiseimage(:,:,2)));
     noiseimagef(:,:,3)=fftshift(fft2(noiseimage(:,:,3)));
@@ -96,10 +98,8 @@ for z=1:N
 
     clear re0_temp rep_temp rem_temp
 
-    % if z==1
     fmask=double(sqrt(xr.^2+yr.^2)>cutoff*mask_factor);
-    [shiftvalue,~]=frequency_est_tirf_v2(separated_FT,0.008,fmask,show_initial_result_flag,mask_factor*cutoff);
-    % shiftvalue=[0,0;60,3;-60,-3];
+    [shiftvalue,~]=frequency_est_tirf_v2(separated_FT,0.8,fmask,show_initial_result_flag,mask_factor*cutoff);
     clear separated_FT
 
     shiftvalue(2,:)=shiftvalue(2,:)-shiftvalue(1,:);
@@ -121,10 +121,8 @@ for z=1:N
     sigma=0.1;
     % [cc_phase]=crosscorrelation_phase_est_SIM(noiseimagef,precise_shift,sigma,OTFde);
 
-
     %% auto-correlation based algorithm
     auto_phase=zeros(1,p_num);
-
 
     for jj=1:p_num
         f_temp=exact_shift(noiseimagef(:,:,jj),...
@@ -172,20 +170,26 @@ for z=1:N
     separated_FT(:,:,2)=rep_temp.*n_filt;
     separated_FT(:,:,3)=rem_temp.*n_filt;
 
+    %Obtaining optical-sectioned baseband
+    tempf = (noiseimagef(:,:,1)-noiseimagef(:,:,2)).*n_filt;
 
-    temps = sqrt((noiseimage(:,:,1)-noiseimage(:,:,2)).^2+(noiseimage(:,:,2)-noiseimage(:,:,3)).^2+(noiseimage(:,:,3)-noiseimage(:,:,1)).^2);
-    tempf1 = fftshift(fft2(abs(temps)));
-    separated_FT(:,:,1) = tempf1.*(1-n_filt)+alpha*separated_FT(:,:,1).*n_filt;
+    refm1 = repmat([0:ysize-1],xsize,1);
+    refm2 = repmat([0:xsize-1]',1,ysize);
+    refm = cos(2*pi*(refm1*precise_shift(2,2)/ysize+refm2*precise_shift(2,1)/xsize)+inv_phase(1));
+    refm = refm - cos(2*pi*(refm1*precise_shift(2,2)/ysize+refm2*precise_shift(2,1)/xsize)+inv_phase(2));
 
-    % reconstructed_wf=separated_FT(:,:,1);
 
-    [~,noise_ratio]=frequency_est_tirf_v2(separated_FT,0.008,fmask,show_corrected_result_flag,mask_factor*cutoff);
+    temps = real(ifft2(fftshift(tempf)));
+    tempsdm = refm.*temps;
+    tempf1 = fftshift(fft2(tempsdm));
+    separated_FT(:,:,1) = tempf1.*(1-n_filt)+alpha*separated_FT(:,:,1).*n_filt;% Modified baseband
+
+    [~,noise_ratio]=frequency_est_tirf_v2(separated_FT,0.8,fmask,show_corrected_result_flag,mask_factor*cutoff);
 
     clear noiseimagef
-    %% interpolate when necessary
+    
     clear re0_temp rem_temp rep_temp R X Y xr yr OTF_temp
-
-
+    %% Frequency shift
     OTF_n=zeros(size(OTFde));
     OTF_nb=OTF_n;% OTF of reconstruct image
     ft_true=zeros(size(separated_FT));
@@ -218,14 +222,10 @@ for z=1:N
     reference=ft_true(:,:,1);
 
     for jj=1:3
-        if jj==1
-            %mask_temp=OTFcirc.*circshift(OTFcirc,[shiftvalue(ii,2,1),shiftvalue(ii,2,2)]);
-            %with pre-deconvolution
-
+        if jj==1          
             mask_temp=OTFcirc.*circshift(OTF_de_temp,[shiftvalue(2,1),shiftvalue(2,2)]);
             mask_temp=mask_temp./(OTF_de_temp+wiener_factor^2);
             %without pre-deconvolution
-
             mod_depth_temp(jj)=sum(sum(conj(reference).*ft_true(:,:,jj).*mask_temp));
         else
             mod_depth_temp(jj)=sum(sum(conj(reference).*ft_true(:,:,jj)));
@@ -258,24 +258,38 @@ for z=1:N
 
     %% Reconstruction
     FT_extended=sum(ft_true,3);
-    % FT_extended = alpha*FT_extended+(1-n_filt).*tempf1;
-    reconstructed_im=ifft2(ifftshift(FT_extended));
+%   FT_extended(:,[1:800 end-800:end])=0;%Further filtering high-freq
+    sft = shiftvalue(2,2);
+    n_filt1 = [ones(xsize,sft), n_filt(1:xsize,1:end-sft)];
+    n_filt1 = n_filt1.*[n_filt(1:xsize,sft+1:end),ones(xsize,sft)];
+    n_filt1 = n_filt1.*[n_filt(1:xsize,sft*2+1:end),ones(xsize,sft*2)];
+    n_filt1 = n_filt1.*[ones(xsize,sft*2), n_filt(1:xsize,1:end-sft*2)];
+    
+    reconstructed_im=real(ifft2(ifftshift(FT_extended.*(0.1+0.9*n_filt1))));
     reconstructed_im=real(reconstructed_im).*(real(reconstructed_im>0));
-    reconstructed_im=deconvlucy(reconstructed_im,psf_n,4);
+    reconstructed_im = reconstructed_im(1:imv,1:imh);
+    reconstructed_im = imresize(reconstructed_im, [imv/2 imh]);
+    reconstructed_im = imfilter(reconstructed_im, fspecial('gaussian',10,1));
+    reconstructed_im = reconstructed_im.*(reconstructed_im>0);
+    reconstructed_im=deconvlucy(reconstructed_im,psf_n(950:970,950:970),4);
     crsim(:,:,z)=reconstructed_im;
     % figure;imshow(reconstructed_im,[]);title('SIM');
-
+  
     % widefield=deconvlucy(widefield,ipsfde,3);
-    lscm(:,:,z)=widefield;
-    % figure;imshow(widefield,[]);title('wide-field');
+    widefield1=deconvlucy(widefield,ipsfde,3);
+ 
+    widefield1 = widefield1(1:imv,1:imh);
+     widefield1 = imresize(widefield1, [imv/2 imh]);
+    lscm(:,:,z)=widefield1;
+    % figure;imshow(widefield1,[]);title('wide-field');
 
     close all;
 end
 
 if save_flag==1
 
-    crsim = uint16(crsim);
-    lscm = uint16(lscm);
+    crsim = uint16(crsim/max(crsim(:))*65535);
+    lscm = uint16(lscm/max(lscm(:))*65535);
 
     for i=1:N
         disp(i);
